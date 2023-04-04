@@ -1,0 +1,160 @@
+#include "stm32f3xx_hal.h"
+void delay(TIM_TypeDef*, int);
+void GPIO_Pin_pushbutton(int pin);
+void GPIO_Pin_Init(int pin);
+
+int main(void){
+
+	RCC->AHBENR |= RCC_AHBENR_GPIOAEN; // Enable GPIOA
+	RCC->APB1ENR |= RCC_APB1ENR_TIM2EN; // Enable TIM2
+	uint16_t pin_number = 0;
+	GPIO_TypeDef *GPIOx = GPIOA;
+	TIM_TypeDef *TIMx = TIM2;
+
+	//intialize LEDS
+
+	RCC->AHBENR |= RCC_AHBENR_GPIOEEN; // Enable GPIOE
+	int p8 = 8;
+	int p9 = 9;
+	int p10 =10;
+	int p11 = 11;
+	int p12 = 12;
+	int p13 = 13;
+	int p14 = 14;
+	int p15 = 15;
+
+	GPIO_Pin_Init(p8);
+	GPIO_Pin_Init(p9);
+	GPIO_Pin_Init(p10);
+	GPIO_Pin_Init(p11);
+	GPIO_Pin_Init(p12);
+	GPIO_Pin_Init(p13);
+	GPIO_Pin_Init(p14);
+	GPIO_Pin_Init(p15);
+
+	// Set PA0 to be AF (TIM2_CH1)
+	// - No pull up/down configuration
+	GPIOx->MODER &= ~(3UL << pin_number*2);
+	GPIOx->MODER |= 2UL << pin_number*2;
+	GPIOx->OTYPER &= ~(1UL << pin_number*1);
+	GPIOx->OSPEEDR &= ~(3UL << pin_number*2);
+	GPIOx->PUPDR &= ~(3UL << pin_number*2);
+	GPIOx->AFR[0] &= ~(15UL << pin_number*4);
+	GPIOx->AFR[0] |= 1UL << pin_number*4;
+
+	// Configure TIM2
+	TIMx->CR1 &= ~(1UL << 4 | 1UL << 3 | 1UL << 0);
+	TIMx->CCMR1 &= ~(7UL << 4 | 1UL << 16);
+	TIMx->CCMR1 |= 3UL << 4;
+	TIMx->CCER &= ~(1UL << 1);
+	TIMx->CCER |= 1UL << 0;
+
+	RCC->AHBENR |= RCC_AHBENR_ADC12EN; // Enable ADC1
+	pin_number = 2;
+	ADC_TypeDef *ADCx = ADC1;
+	ADC_Common_TypeDef *ADCx_COMMON = ADC12_COMMON;
+
+	// Set PA2 to analog (ADC1_IN3)
+	// - No pull up/down configuration
+	GPIOx->MODER &= ~(3UL << pin_number*2);
+	GPIOx->MODER |= 3UL << pin_number*2;
+	GPIOx->PUPDR &= ~(3UL << pin_number*2);
+
+	// Configure ADC
+	// Enable voltage regulator
+	ADCx->CR &= ~(0x3F << 0 | 3UL << 28);
+	ADCx->CR |= 1UL << 28;
+
+	// Wait for regulator to stabilize (10us)
+	delay(TIMx, 10);
+
+	// Start ADC calibration
+	ADCx->CR &= ~(0x3F); // Do not disable voltage regulator
+	ADCx_COMMON->CCR |= 2UL << 16; // Select ADC clock source
+	ADCx->CR &= ~(1UL << 30); // Select single ended
+
+	ADCx->CR |= 1UL << 31; // Start Calibration
+
+	// Wait for calibration to complete
+	while((ADCx->CR & (1UL << 31)) == 1UL << 31);
+
+	// Set ADC resolution
+	ADCx->CFGR &= ~(3UL << 3 | 1UL << 5);
+	ADCx->CFGR |= 2UL << 3; // 8-bit resolution
+
+	// Clear sequence length - set 1 conversion
+	ADCx->SQR1 &= ~(0xF << 0 | 0x1F << 6);
+	ADCx->SQR1 |= 3UL << 6; // Sequence 1 - Channel 3
+
+	// Enable ADC to start measurements
+	ADCx->CR |= 1UL << 0;
+
+	// Wait for ADC to be ready
+	while((ADC1->ISR & (1UL << 0)) != 1UL << 0);
+	uint16_t data = 0;
+
+	int pushpin = 0;
+	GPIO_Pin_pushbutton(pushpin);
+	int counter = 1;
+	while (1){
+		loop();
+		uint32_t pin_state = (GPIOA->IDR & (1UL << pushpin));
+		loop();
+		if(pin_state == 1){
+			loop();
+						ADCx->CR |= 1UL << 2; // Start conversion
+						// Wait for conversion to complete
+						while((ADCx->ISR & (1UL << 2)) == (0UL << 2));
+						data = ADCx->DR & 0x3FF; // Retrieve data, added extra F
+						int datashift = data << 8;//shift to allign with led pins
+						GPIOE->ODR = datashift;
+		}
+/*
+		if(counter%2==0){
+			loop();
+			ADCx->CR |= 1UL << 2; // Start conversion
+			// Wait for conversion to complete
+			while((ADCx->ISR & (1UL << 2)) == (0UL << 2));
+			data = ADCx->DR & 0x3FF; // Retrieve data, added extra F
+			int datashift = data << 8;//shift to allign with led pins
+			GPIOE->ODR = datashift;
+		}else{
+			loop();
+			GPIOE->ODR = 0;
+		}*/
+	}
+}
+void delay(TIM_TypeDef *TIMx, int us){
+	// Configure timer to generate delay
+	TIMx->PSC = 7; // 8MHz / (1 + 7) = 1MHz => 1us per count
+	TIMx->ARR = us - 1;
+	TIMx->CCR1 = us;
+	// Enable timer and set one pulse mode (cnt resets when done)
+	TIMx->CR1 |= 1 << 3 | 1UL << 0;
+	while(TIMx->CNT != 0); // CNT = 0 after counting
+	TIMx->CR1 &= ~(1UL << 0);
+}
+void GPIO_Pin_pushbutton(int pin)
+{
+	GPIOA->MODER &= ~(3UL << 0);
+	GPIOA->MODER |= 0UL << 0;
+	GPIOA->PUPDR &= ~(3UL << 0);
+
+}
+void GPIO_Pin_Init(int pin)
+{
+        GPIOE->MODER &= ~(3UL << pin*2);
+
+        GPIOE->MODER |= 1UL << pin*2;
+
+        GPIOE->OTYPER &= ~(1UL << pin*1);
+
+        GPIOE->OSPEEDR &= ~(3UL << pin*2);
+        GPIOE->OSPEEDR |=1UL << pin*2;
+        GPIOE->PUPDR &= ~(3UL << pin*2);
+}
+void loop(){
+	for(int i=0; i<2500;i++){
+
+	}
+}
